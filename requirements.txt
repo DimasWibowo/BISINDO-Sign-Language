@@ -11,6 +11,7 @@ numpy==1.25.2
 oauthlib==3.2.2
 opencv-contrib-python==4.8.1.78
 opencv-python==4.8.0.76
+opencv-python-headless
 pandas==2.0.3
 pygame==2.5.2
 pyttsx3==2.90
