@@ -2,31 +2,20 @@ import streamlit as st
 from pytube import YouTube
 import hydralit_components as hc
 from streamlit.components.v1 import html
+#--------------------------#
+import cv2
+import numpy as np
+import os
+import time
+import mediapipe as mp
+import tensorflow as tf
+import warnings
+warnings.filterwarnings('ignore')
+import pygame
+from gtts import gTTS
+#--------------------------#
 
-def nav_page(page_name, timeout_secs=10):
-    nav_script = """
-        <script type="text/javascript">
-            function attempt_nav_page(page_name, start_time, timeout_secs) {
-                var links = window.parent.document.getElementsByTagName("a");
-                for (var i = 0; i < links.length; i++) {
-                    if (links[i].href.toLowerCase().endsWith("/" + page_name.toLowerCase())) {
-                        links[i].click();
-                        return;
-                    }
-                }
-                var elasped = new Date() - start_time;
-                if (elasped < timeout_secs * 1000) {
-                    setTimeout(attempt_nav_page, 100, page_name, start_time, timeout_secs);
-                } else {
-                    alert("Unable to navigate to page '" + page_name + "' after " + timeout_secs + " second(s).");
-                }
-            }
-            window.addEventListener("load", function() {
-                attempt_nav_page("%s", new Date(), %d);
-            });
-        </script>
-    """ % (page_name, timeout_secs)
-    html(nav_script)
+pygame.init()
 
 st.set_page_config(
     page_title='bisindo',
@@ -34,8 +23,81 @@ st.set_page_config(
     initial_sidebar_state='expanded',
 )
 
+#----------------Interpreter-----------------------------#
+# MP Holistic:
+mp_holistic = mp.solutions.holistic # Holistic model
+mp_drawing = mp.solutions.drawing_utils # Drawing utilities
 
-# Fungsi untuk mendapatkan judul dari YouTube URL tanpa imbuhan "Bisindo"
+def text_to_speech(text):
+    tts = gTTS(text=text, lang='id')
+    tts.save('output.mp3')
+    pygame.mixer.music.load('output.mp3')
+    pygame.mixer.music.play()
+    while pygame.mixer.music.get_busy():
+        pygame.time.Clock().tick(10)
+    pygame.mixer.music.stop()
+    pygame.mixer.music.unload()
+    os.remove('output.mp3')
+
+def mediapipe_detection(image, model):
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) # COLOR CONVERSION BGR 2 RGB
+    image.flags.writeable = False                  # Image is no longer writeable
+    results = model.process(image)                 # Make prediction
+    image.flags.writeable = True                   # Image is now writeable 
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR) # COLOR COVERSION RGB 2 BGR
+    return image, results
+
+def draw_styled_landmarks(image, results):
+    # Draw pose connections
+    mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS,
+                             mp_drawing.DrawingSpec(color=(80,22,10), thickness=2, circle_radius=4), 
+                             mp_drawing.DrawingSpec(color=(80,44,121), thickness=2, circle_radius=2)
+                             ) 
+    # Draw left hand connections
+    mp_drawing.draw_landmarks(image, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS, 
+                             mp_drawing.DrawingSpec(color=(121,22,76), thickness=2, circle_radius=4), 
+                             mp_drawing.DrawingSpec(color=(121,44,250), thickness=2, circle_radius=2)
+                             ) 
+    # Draw right hand connections  
+    mp_drawing.draw_landmarks(image, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS, 
+                             mp_drawing.DrawingSpec(color=(245,117,66), thickness=2, circle_radius=4), 
+                             mp_drawing.DrawingSpec(color=(245,66,230), thickness=2, circle_radius=2)
+                             ) 
+
+# Extract Keypoint values
+def extract_keypoints(results):
+    pose = np.array([[res.x, res.y, res.z, res.visibility] for res in results.pose_landmarks.landmark]).flatten() if results.pose_landmarks else np.zeros(33*4)
+    lh = np.array([[res.x, res.y, res.z] for res in results.left_hand_landmarks.landmark]).flatten() if results.left_hand_landmarks else np.zeros(21*3)
+    rh = np.array([[res.x, res.y, res.z] for res in results.right_hand_landmarks.landmark]).flatten() if results.right_hand_landmarks else np.zeros(21*3)
+    return np.concatenate([pose, lh, rh])
+
+# Load model:
+model = tf.keras.models.load_model('./pretrained_models/model_thirdrun.h5')
+
+model.compile(optimizer='adam',
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+
+# Visualize prediction:
+def prob_viz(res, actions, input_frame):
+    output_frame = input_frame.copy()
+
+    pred_dict = dict(zip(actions, res))
+    # sorting for prediction and get top 5
+    prediction = sorted(pred_dict.items(), key=lambda x: x[1])[::-1][:5]
+
+    for num, pred in enumerate(prediction):
+        text = '{}: {}'.format(pred[0], round(float(pred[1]),4))
+        # cv2.rectangle(output_frame, (0,60+num*40), (int(prob*100), 90+num*40), colors[num], -1)
+        cv2.putText(output_frame, text, (0, 85+num*40), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255,255,255), 2, cv2.LINE_AA) 
+    return output_frame
+
+
+
+#--------------------------------------------------------#
+
+#------------------------Belajar-------------------------#
+# Fungsi untuk mendapatkan judul dari YouTube URL"
 def get_video_title(youtube_url):
     try:
         yt = YouTube(youtube_url)
@@ -57,6 +119,95 @@ def display_youtube_video(youtube_url):
     video_url = f"https://www.youtube.com/embed/{video_id}"
     st.write(f'<iframe width="280" height="157" src="{video_url}" frameborder="0" allowfullscreen style="margin-bottom: 20px;"></iframe>', unsafe_allow_html=True)
 
+#----------------Mini Game------------------#
+def initialize_session_state():
+    if 'current_question' not in st.session_state:
+        st.session_state.current_question = 0
+    if 'player_score' not in st.session_state:
+        st.session_state.player_score = 0
+
+def update_score(player_choice, correct_answer):
+    if player_choice.lower() == correct_answer.lower():
+        st.session_state.player_score += 1
+
+def calculate_score(player_choice):
+    correct_answer = quiz_questions[st.session_state.current_question]['answer']
+    update_score(player_choice, correct_answer)
+    st.session_state.current_question += 1
+
+quiz_questions = [
+    {
+        'image_path': 'gambar_soal/gambar_D.jpg',
+        'answer': 'D'
+    },
+        {
+        'image_path': 'gambar_soal/gambar_I.jpg',
+        'answer': 'I'
+    },
+    {
+        'image_path': 'gambar_soal/gambar_M.jpg',
+        'answer': 'M'
+    },
+    {
+        'image_path': 'gambar_soal/gambar_A.jpg',
+        'answer': 'A'
+    },
+    {
+        'image_path': 'gambar_soal/gambar_S.jpg',
+        'answer': 'S'
+    }
+]
+
+#--------------------------------------------#
+
+#----------------Tentang---------------------#
+def about_section():
+
+    col1, col2, col3, col4 = st.columns([1, 1, 1, 1 ])
+    with col2:
+            st.image('./streamlit_files/dimas.jpg', width=150)
+            
+    with col3:
+        st.markdown(
+            """
+            <style>
+                .centered-content {
+                    display: flex;
+                    align-items: center;
+                    justify-content: flex-start;
+                    margin-bottom: 20px;
+                }
+
+                .content-text {
+                    margin-left: -120px;
+                    margin-right: -39px;
+                }
+
+                .content-text p {
+                    margin-bottom: 10px;
+                    text-align: justify;
+                }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
+        st.markdown(
+            """
+            <div class="centered-content">
+                <div class="content-text">
+                    <p>Menurut Organisasi Kesehatan Dunia (WHO), terdapat sekitar 450 juta orang yang tunarungu atau memiliki kesulitan mendengar. Satu-satunya cara mereka dapat berkomunikasi satu sama lain adalah melalui bahasa isyarat. Namun, bahasa isyarat belum begitu populer di kalangan masyarakat umum. Hal ini membuat komunitas tunarungu sulit mengakses layanan publik dan berkomunikasi dengan orang biasa serta mengembangkan karier mereka. Oleh karena itu, Web App ini lahir untuk memudahkan komunitas tunarungu dalam berkomunikasi dan menjalani kehidupan yang lebih baik.</p>
+                    <p><a href="https://docs.google.com/document/d/1HLpP3jvJzZjQL8kz0skGSLmqjiYaHHHtzQiFid2quxc/edit">Informasi Lebih Lanjut - Google Doc</a></p>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+#-----------------------------------------------#
+        
+#------------------Streamlit--------------------#
+    
 def main():
     # Menyesuaikan margin dan lebar kolom agar tidak menumpuk
     over_theme = {'txc_inactive': 'white','menu_background':'green','txc_active':'green','option_active':'white'}
@@ -66,6 +217,7 @@ def main():
     menu = hc.nav_bar(
         menu_definition=[
             {"label": "Beranda"},
+            {"label": "Sign-Talk"}, 
             {"label": "Belajar"},
             {"label": "Mini Games"},           
             {"label": "Tentang"}
@@ -102,10 +254,52 @@ def main():
         """,
         unsafe_allow_html=True
     )
-    
+    if menu == "Beranda":
+        st.markdown(
+            """
+            <div style="text-align:center; margin-top:-75px;">
+            <h1 style="font-variant: small-caps; font-size: xx-large; margin-bottom:-45px;">
+            <font color=#ea0525>w e b a p p</font>
+            </h1>
+            <h1>  Real-Time Indonesian Sign Language Interpreter </h1>
+            <hr>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        centered_style = """
+            <style>
+            .st-emotion-cache-1kyxreq {
+                display: flex;
+                flex-flow: wrap;
+                row-gap: 0rem;
+                justify-content: center;
+            }
+            </style>
+        """
+
+        st.markdown(centered_style, unsafe_allow_html=True)
+        st.image('./streamlit_files/bisindo.jpg', width=400)
+
+        st.markdown(
+            """
+            <div style="max-width: 800px; margin: 0 auto; text-align: center;">
+                <p>BISINDO (Bahasa Isyarat Indonesia)</p>
+                <p>Bahasa isyarat ini lah yang sering ditemukan di kalangan Teman Tuli maupun Teman Inklusi pengguna bahasa isyarat. BISINDO dibentuk oleh kelompok Tuli dan muncul secara alami berdasarkan pengamatan Teman Tuli. Maka dari itu, BISINDO memiliki variasi “dialek” di berbagai daerah. BISINDO disampaikan dengan gerakan dua tangan.</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
     # Tampilan untuk "Beranda"
-    if menu == "Belajar":
+    elif menu == "Belajar":
         st.title("Pelajari Bahasa Isyarat Indonesia")
+        st.markdown("""
+             <div style="max-width: 800px; margin: 0 auto; text-align: center;">
+                <p>Mari berkomunikasi tanpa hambatan! Di Indonesia terdapat lebih dari 2.500.000 tuli dan Bisindo adalah bentuk komunikasi yang paling efektif serta tidak terbatas hanya untuk Tuli tetapi juga untuk semua orang. Selain untuk mengurangi hambatan dalam berkomunikasi dan mendukung lingkungan yang inklusif, mempelajari BISINDO juga mempunyai banyak manfaat.</p>
+            </div>
+        """, unsafe_allow_html=True)
 
         youtube_urls = [
             "https://www.youtube.com/watch?v=GCFfwXFi6hA",
@@ -199,11 +393,192 @@ def main():
                 st.error(f"Terjadi kesalahan dalam memuat video dari URL {url}.")
                 st.error(str(e))
 
-    # elif menu == "Mini Games":
-    #     mini_game()
-
     elif menu == "Mini Games":
-        nav_page("game")
+        # CSS untuk Mini Game
+        centered_style = """
+            <style>
+            .centered {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                text-align: center;
+            }
+
+            div.stTextInput {
+                width: 250px;
+                margin: auto;
+             }
+
+            .st-cg {
+                padding: 13px !important;
+                margin: 0px !important;
+            }
+            .centered-image {
+                width: 300px; /* Lebar gambar */
+                margin-bottom: 20px; /* Jarak dari gambar ke elemen lain */
+            }
+
+            .st-emotion-cache-1kyxreq {
+                display: flex;
+                flex-flow: wrap;
+                row-gap: 0rem;
+                justify-content: center;
+            }
+            </style>
+        """
+
+        st.markdown(centered_style, unsafe_allow_html=True)
+
+        initialize_session_state()
+
+        ind = st.session_state.current_question
+
+        if ind < len(quiz_questions):
+            current_question = quiz_questions[ind]
+            image_path = current_question["image_path"]
+            
+            st.markdown("<div class='centered'><h1>Mini Game</h1></div>", unsafe_allow_html=True)
+            st.image(image_path, width=300, caption=f"Question {ind + 1}/{len(quiz_questions)}")  # Mengatur lebar gambar menjadi 300 piksel dan menambahkan keterangan
+                
+            player_choice = st.text_input("Your Answer", key=f"question_{ind}") 
+
+            # Memposisikan tombol Submit di tengah
+            col1, col2, col3 = st.columns([1, 3, 1])
+            with col2:
+                if st.button("Submit", key=f"submit_{ind}"):
+                    calculate_score(player_choice)
+                    
+                    if st.session_state.current_question < len(quiz_questions):
+                        st.experimental_rerun()
+
+                    if st.session_state.current_question >= len(quiz_questions):
+                        st.success("Kuis Telah Selesai")
+                        st.button("Cek Nilai Anda", on_click=initialize_session_state)
+        else:
+            st.warning(f"Selamat anda telah menyelesaikan mini game. Nilai Anda:{st.session_state.player_score}")
+            if st.button("Main Lagi"):
+                st.session_state.current_question = 0
+                st.session_state.player_score = 0
+
+    elif menu == "Tentang":
+        st.markdown(
+            """
+            <div style="text-align:center; margin-top:-75px;">
+            <h1 style="font-variant: small-caps; font-size: xx-large; margin-bottom:-45px;">
+            <font color=#ea0525>t e n t a n g</font>
+            </h1>
+            <h1>  Real-Time Indonesian Sign Language Interpreter </h1>
+            <hr>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        about_section()
+
+    elif menu == "Sign-Talk":
+        st.markdown(
+            """
+            <div style="text-align:center; margin-top:-75px;">
+            <h1>  SIGN-TALK </h1>
+            <h3 style="font-weight: normal;">Realtime Interpreter Bahasa Isyarat Indonesia dengan Text to Speech</h3>
+            <hr>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # New detection variables
+        sequence = []
+        sentence = []
+        threshold = 0.9
+        tts = False
+        actions = os.listdir('./MP_Data')
+        label_map = {label:num for num, label in enumerate(actions)}
+
+        # Checkboxes
+        col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 1,3])
+        with col2:
+            show_webcam = st.checkbox('Show webcam')
+        with col3:
+            show_landmarks = st.checkbox('Show landmarks')
+        with col4:
+            speak = st.checkbox('Speak')
+
+        # Webcam
+        col1, col2, col3 = st.columns([1.5, 3, 1])
+        with col2:
+            FRAME_WINDOW = st.image([])
+            cap = cv2.VideoCapture(0) # device 1/2
+
+        # Mediapipe model 
+        with mp_holistic.Holistic(min_detection_confidence=0.7, min_tracking_confidence=0.7) as holistic:
+            while show_webcam:
+                # Read feed
+                ret, frame = cap.read()
+
+                # Make detections
+                image, results = mediapipe_detection(frame, holistic)
+                
+                # Draw landmarks
+                if show_landmarks:
+                    draw_styled_landmarks(image, results)
+                
+                # 2. Prediction logic
+                keypoints = extract_keypoints(results)
+
+                sequence.append(keypoints)
+                sequence = sequence[-24:]
+                
+                if len(sequence) == 24:
+                    res = model.predict(np.expand_dims(sequence, axis=0))[0]
+
+                    #3. Viz logic
+                    if res[np.argmax(res)] > threshold: 
+                        if len(sentence) > 0: 
+                            if actions[np.argmax(res)] != sentence[-1]:
+                                # incase the first word is iloveyou:
+                                if (sentence[0] == '') and (actions[np.argmax(res)] == 'terima kasih'):
+                                    pass
+                                else:
+                                    sentence.append(actions[np.argmax(res)])
+                                    tts = True
+                        else:
+                            sentence.append(actions[np.argmax(res)])
+                            tts = True
+
+                    if len(sentence) > 5: 
+                        sentence = sentence[-5:]
+
+                    # Viz probabilities
+                    if show_landmarks:
+                        image = prob_viz(res, actions, image)
+
+                    # Text to speak:
+                    if speak:
+                        if tts: 
+                            text_to_speech(sentence[-1])
+                            tts = False
+
+                    # show result
+                    cv2.rectangle(image, (0,0), (640, 40), (245, 117, 16), -1)
+                    cv2.putText(image, ' '.join(sentence), (3,30), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                
+                # Show to screen
+                # cv2.imshow('OpenCV Feed', image)
+                frameshow = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                FRAME_WINDOW.image(frameshow)
+
+                # Break gracefully
+                if cv2.waitKey(10) & 0xFF == ord('q'):
+                    break
+                
+            cap.release()
+            cv2.destroyAllWindows()
+
+        cap.release()
+        cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
