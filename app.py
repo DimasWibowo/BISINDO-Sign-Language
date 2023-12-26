@@ -72,7 +72,7 @@ def extract_keypoints(results):
     return np.concatenate([pose, lh, rh])
 
 # Load model:
-model = tf.keras.models.load_model('./pretrained_models/model_thirdrun.h5')
+model = tf.keras.models.load_model('./pretrained_models/model_baru.h5')
 
 model.compile(optimizer='adam',
               loss='categorical_crossentropy',
